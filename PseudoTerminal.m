@@ -174,11 +174,6 @@ NSString *sessionsKey = @"sessions";
     self = [super initWithWindowNibName:@"PseudoTerminal"];
     NSAssert(self, @"initWithWindowNibName returned nil");
 
-    // Force the nib to load
-    [self window];
-    [commandField retain];
-    [commandField setDelegate:self];
-    [bottomBar retain];
     if (windowType == WINDOW_TYPE_FULL_SCREEN && screenNumber == -1) {
         NSUInteger n = [[NSScreen screens] indexOfObjectIdenticalTo:[[self window] screen]];
         if (n == NSNotFound) {
@@ -190,6 +185,17 @@ NSString *sessionsKey = @"sessions";
     if (windowType == WINDOW_TYPE_TOP) {
         smartLayout = NO;
     }
+    if (windowType == WINDOW_TYPE_NORMAL) {
+        // If you create a window with a minimize button and the menu bar is hidden then the
+        // minimize button is disabled. Currently the only window type with a miniaturize button
+        // is NORMAL.
+        [NSMenu setMenuBarVisible:YES];
+    }
+    // Force the nib to load
+    [self window];
+    [commandField retain];
+    [commandField setDelegate:self];
+    [bottomBar retain];
     windowType_ = windowType;
     pbHistoryView = [[PasteboardHistoryView alloc] init];
     autocompleteView = [[AutocompleteView alloc] init];
@@ -1316,6 +1322,10 @@ NSString *sessionsKey = @"sessions";
         PtyLog(@"toggleFullScreenMode - set new frame to old frame: %fx%f", oldFrame_.size.width, oldFrame_.size.height);
         [[newTerminal window] setFrame:oldFrame_ display:YES];
     }
+
+    // Ensure that fullscreen windows (often hotkey windows) don't lose their collection behavior.
+    [[newTerminal window] setCollectionBehavior:[[self window] collectionBehavior]];
+
     newTerminal->useTransparency_ = useTransparency_;
     [newTerminal setIsHotKeyWindow:isHotKeyWindow_];
 
@@ -3000,12 +3010,12 @@ NSString *sessionsKey = @"sessions";
     if (![bottomBar isHidden]) {
         int dh = [bottomBar frame].size.height / charHeight + 1;
         height -= dh;
-        yoffset = [bottomBar frame].size.height;
+        yoffset = [bottomBar frame].size.height + VMARGIN;
     } else {
         yoffset = floor(aRect.size.height - charHeight * height)/2; // screen height minus one half character
     }
     aRect = NSMakeRect(floor((aRect.size.width - width * charWidth - MARGIN * 2)/2),  // screen width minus one half character and a margin
-                       yoffset,
+                       yoffset - VMARGIN,                                     // shift down by one VMARGIN
                        width * charWidth + MARGIN * 2,                        // enough width for width col plus two margins
                        charHeight * height + VMARGIN * 2);                    // enough height for width rows
     [TABVIEW setFrame:aRect];
@@ -4116,7 +4126,7 @@ NSString *sessionsKey = @"sessions";
     if ([self numberOfTabs] == 1 &&
         [addressbookEntry objectForKey:KEY_SPACE] &&
         [[addressbookEntry objectForKey:KEY_SPACE] intValue] == -1) {
-        [[self window] setCollectionBehavior:NSWindowCollectionBehaviorCanJoinAllSpaces];
+        [[self window] setCollectionBehavior:[[self window] collectionBehavior] | NSWindowCollectionBehaviorCanJoinAllSpaces];
     }
 
     [aSession release];
