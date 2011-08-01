@@ -33,7 +33,7 @@
 #define GREEN_COEFFICIENT  0.59
 #define BLUE_COEFFICIENT   0.11
 
-static const double kBrightnessThreshold = 0.95;
+static const double kBrightnessThreshold = 0.5;
 
 @implementation FontSizeEstimator
 
@@ -95,6 +95,7 @@ static double Brightness(NSColor* c) {
                                      osSize.width * 2,
                                      osSize.height * 2)
                   options:0];
+        [str release];
     }
     [image unlockFocus];
 
