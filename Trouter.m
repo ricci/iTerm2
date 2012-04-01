@@ -27,17 +27,18 @@
 
 #import "Trouter.h"
 #import "RegexKitLite/RegexKitLite.h"
-
+#import "TrouterPrefsController.h"
+#import "NSStringITerm.h"
 
 @implementation Trouter
+
+@synthesize prefs = prefs_;
 
 - (Trouter *)init
 {
     self = [super init];
     if (self) {
-      [self determineEditor];
       fileManager = [[NSFileManager alloc] init];
-      externalScript = [[NSUserDefaults standardUserDefaults] stringForKey:@"SemanticHistoryHandler"];
     }
     return self;
 }
@@ -48,53 +49,9 @@
     [super dealloc];
 }
 
-- (void)determineEditor
-{
-    // TODO: Move this into a plist file/prefs
-    if ([self applicationExists:@"org.vim.MacVim"]) {
-        editor = @"mvim";
-    } else if ([self applicationExists:@"com.macromates.textmate"]) {
-        editor = @"txmt";
-    } else if ([self applicationExists:@"com.barebones.bbedit"]) {
-        // BBedit suports txmt handler but doesn't have one of its own for some reason.
-        editor = @"txmt";
-    }
-}
-
 - (NSFileManager *)fileManager
 {
     return fileManager;
-}
-
-- (BOOL)applicationExists:(NSString *)bundle_id
-{
-    return [self applicationExists:bundle_id path:nil];
-}
-
-- (BOOL)applicationExists:(NSString *)bundle_id path:(NSString **)path
-{
-    CFURLRef appURL = nil;
-    OSStatus result = LSFindApplicationForInfo(kLSUnknownCreator,
-                                               (CFStringRef)bundle_id,
-                                               NULL,
-                                               NULL,
-                                               &appURL);
-
-    if (appURL) { 
-        if (path != nil) {
-            *path = [(NSURL *)appURL path];
-        }
-        CFRelease(appURL);
-    }
-
-    switch (result) {
-        case noErr:
-            return true;
-        case kLSApplicationNotFoundErr:
-            return false;
-        default:
-            return false;
-    }
 }
 
 - (BOOL) isDirectory:(NSString *)path
@@ -106,7 +63,7 @@
 
 - (BOOL)isTextFile:(NSString *)path
 {
-    // TODO: link in the "magic" library from file instead of calling it.
+    // TODO(chendo): link in the "magic" library from file instead of calling it.
     NSTask *task = [[NSTask alloc] init];
     NSPipe *myPipe = [NSPipe pipe];
     NSFileHandle *file = [myPipe fileHandleForReading];
@@ -151,19 +108,20 @@
          workingDirectory:(NSString *)workingDirectory
                lineNumber:(NSString **)lineNumber
 {
-    // TODO: Move regex, define capture semants in config file/prefs
+    NSString *origPath = path;
+    // TODO(chendo): Move regex, define capture semants in config file/prefs
     if (!path || [path length] == 0) {
         return nil;
     }
 
-    // strip any trailing parenthesis
-    path = [path stringByReplacingOccurrencesOfRegex:@"[)]$"
+    // strip any trailing period or parenthesis
+    path = [path stringByReplacingOccurrencesOfRegex:@"[.)]$"
                                           withString:@""];
 
     if (lineNumber != nil) {
         *lineNumber = [path stringByMatching:@":(\\d+)" capture:1];
     }
-    path = [[path stringByReplacingOccurrencesOfRegex:@":\\d+(?::.*)?$"
+    path = [[path stringByReplacingOccurrencesOfRegex:@":\\d*(?::.*)?$"
                                            withString:@""]
                stringByExpandingTildeInPath];
     if ([path rangeOfRegex:@"^/"].location == NSNotFound) {
@@ -175,49 +133,103 @@
     // Resolve path by removing ./ and ../ etc
     path = [[url standardizedURL] path];
 
-    return path;
+    if ([fileManager fileExistsAtPath:path]) {
+        return path;
+    }
+
+    // If path doesn't exist and it starts with "a/" or "b/" (from `diff`).
+    if ([origPath isMatchedByRegex:@"^[ab]/"]) {
+        // strip the prefix off ...
+        origPath = [origPath stringByReplacingOccurrencesOfRegex:@"^[ab]/"
+                                                 withString:@""];
+
+        // ... and calculate the full path again
+        return [self getFullPath:origPath
+                workingDirectory:workingDirectory
+                      lineNumber:lineNumber];
+    }
+
+    return nil;
+}
+
+- (NSString *)editor
+{
+    if ([[prefs_ objectForKey:kTrouterActionKey] isEqualToString:kTrouterBestEditorAction]) {
+        return [TrouterPrefsController bestEditor];
+    } else if ([[prefs_ objectForKey:kTrouterActionKey] isEqualToString:kTrouterEditorAction]) {
+        return [TrouterPrefsController schemeForEditor:[prefs_ objectForKey:kTrouterEditorKey]] ?
+            [prefs_ objectForKey:kTrouterEditorKey] : nil;
+    } else {
+        return nil;
+    }
+}
+
+- (BOOL)openFileInEditor:(NSString *)path lineNumber:(NSString *)lineNumber {
+    if ([self editor]) {
+        if ([[self editor] isEqualToString:kSublimeTextIdentifier]) {
+            if (lineNumber != nil) {
+                path = [NSString stringWithFormat:@"%@:%@", path, lineNumber];
+            }
+
+            [NSTask launchedTaskWithLaunchPath:@"/usr/bin/env" arguments:[NSArray arrayWithObjects:
+                                                                          @"subl", path, nil]];
+        } else {
+            path = [path stringByAddingPercentEscapesUsingEncoding:NSASCIIStringEncoding];
+            NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:
+                                               @"%@://open?url=file://%@&line=%@",
+                                               [TrouterPrefsController schemeForEditor:[self editor]],
+                                               path, lineNumber, nil]];
+            [[NSWorkspace sharedWorkspace] openURL:url];
+
+        }
+    }
+    return YES;
 }
 
 
-- (BOOL)openPath:(NSString *)path workingDirectory:(NSString *)workingDirectory
+- (BOOL)openPath:(NSString *)path
+    workingDirectory:(NSString *)workingDirectory
+    prefix:(NSString *)prefix
+    suffix:(NSString *)suffix
 {
     BOOL isDirectory;
-    NSString* lineNumber;
-    NSString* orgPath = path;
+    NSString* lineNumber = @"";
 
     path = [self getFullPath:path
             workingDirectory:workingDirectory
                   lineNumber:&lineNumber];
 
-    // if path doesn't exist and it starts with "a/" or "b/" (presumably from `diff`)
-    if (![fileManager fileExistsAtPath:path] && [orgPath isMatchedByRegex:@"^[ab]/"]) {
-        // strip the prefix off ...
-        NSString *temp;
-        temp = [orgPath stringByReplacingOccurrencesOfRegex:@"^[ab]/"
-                                                 withString:@""];
 
-        // ... and calculate the full path again
-        temp = [self getFullPath:temp
-                workingDirectory:workingDirectory
-                      lineNumber:&lineNumber];
-
-        // If the resulting filename exists, then use it.
-        if ([fileManager fileExistsAtPath:temp]) {
-            path = temp;
-        }
+    if ([[prefs_ objectForKey:kTrouterActionKey] isEqualToString:kTrouterRawCommandAction]) {
+        NSString *script = [prefs_ objectForKey:kTrouterTextKey];
+        script = [script stringByReplacingBackreference:1
+                                             withString:path ? [path stringWithEscapedShellCharacters] : @""];
+            script = [script stringByReplacingBackreference:2
+                                                 withString:lineNumber ? lineNumber : @""];
+        script = [script stringByReplacingBackreference:3
+                                             withString:[prefix stringWithEscapedShellCharacters]];
+        script = [script stringByReplacingBackreference:4
+                                             withString:[suffix stringWithEscapedShellCharacters]];
+        script = [script stringByReplacingBackreference:5
+                                             withString:[workingDirectory stringWithEscapedShellCharacters]];
+        [[NSTask launchedTaskWithLaunchPath:@"/bin/sh"
+                                  arguments:[NSArray arrayWithObjects:@"-c", script, nil]] waitUntilExit];
+        return YES;
     }
 
     if (![fileManager fileExistsAtPath:path isDirectory:&isDirectory]) {
         return NO;
     }
 
-    if (lineNumber == nil) {
-        lineNumber = @"";
-    }
-
-    if (externalScript) {
-        [NSTask launchedTaskWithLaunchPath:externalScript
-                                 arguments:[NSArray arrayWithObjects:path, lineNumber, nil]];
+    if ([[prefs_ objectForKey:kTrouterActionKey] isEqualToString:kTrouterCommandAction]) {
+        NSString *script = [prefs_ objectForKey:kTrouterTextKey];
+        script = [script stringByReplacingBackreference:1 withString:path ? [path stringWithEscapedShellCharacters] : @""];
+        script = [script stringByReplacingBackreference:2 withString:lineNumber ? lineNumber : @""];
+        script = [script stringByReplacingBackreference:3 withString:[prefix stringWithEscapedShellCharacters]];
+        script = [script stringByReplacingBackreference:4 withString:[suffix stringWithEscapedShellCharacters]];
+        script = [script stringByReplacingBackreference:5 withString:[workingDirectory stringWithEscapedShellCharacters]];
+        [[NSTask launchedTaskWithLaunchPath:@"/bin/sh"
+                                  arguments:[NSArray arrayWithObjects:@"-c", script, nil]] waitUntilExit];
         return YES;
     }
 
@@ -226,11 +238,16 @@
         return YES;
     }
 
-    if (editor && [self isTextFile:path]) {
-        NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:
-                                     @"%@://open?url=file://%@&line=%@", editor, path, lineNumber, nil]];
-        [[NSWorkspace sharedWorkspace] openURL:url];
+    if ([[prefs_ objectForKey:kTrouterActionKey] isEqualToString:kTrouterUrlAction]) {
+        NSString *url = [prefs_ objectForKey:kTrouterTextKey];
+        url = [url stringByReplacingBackreference:1 withString:[path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding]];
+        url = [url stringByReplacingBackreference:2 withString:lineNumber];
+        [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:url]];
         return YES;
+    }
+
+    if ([self editor] && [self isTextFile:path]) {
+        return [self openFileInEditor: path lineNumber:lineNumber];
     }
 
     [[NSWorkspace sharedWorkspace] openFile:path];

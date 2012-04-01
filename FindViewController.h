@@ -30,6 +30,9 @@
 
 @protocol FindViewControllerDelegate
 
+// Returns true if there is a text area to search.
+- (BOOL)canSearch;
+
 // Delegate should call resetFindCursor in textview.
 - (void)resetFindCursor;
 
@@ -62,10 +65,18 @@
 
 // Remove highlighted matches
 - (void)clearHighlights;
+
+// Preform a search
+- (BOOL)findString:(NSString *)aString
+  forwardDirection:(BOOL)direction
+      ignoringCase:(BOOL)ignoreCase
+             regex:(BOOL)regex
+        withOffset:(int)offset;
+
 @end
 
 
-@interface FindViewController : NSViewController {
+@interface FindViewController : NSViewController <NSTextFieldDelegate> {
     IBOutlet NSSearchField* findBarTextField_;
     IBOutlet NSProgressIndicator* findBarProgressIndicator_;
     // These pointers are just "prototypes" and do not refer to any actual menu

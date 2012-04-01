@@ -30,21 +30,26 @@
 #import <Cocoa/Cocoa.h>
 #import <Carbon/Carbon.h>
 
+// I use a variadic macro here because of an apparent compiler bug in XCode 4.2 that thinks a
+// variadaic objc call as an argument is not a single value.
+#define DebugLog(args...) DebugLogImpl(__FILE__, __LINE__, __FUNCTION__, args)
+
 //#define GENERAL_VERBOSE_LOGGING
 #ifdef GENERAL_VERBOSE_LOGGING
 #define DLog NSLog
 #else
 #define DLog(args...) \
-do { \
-if (gDebugLogging) { \
-DebugLog([NSString stringWithFormat:args]); \
-} \
-} while (0)
+    do { \
+        if (gDebugLogging) { \
+            DebugLogImpl(__FILE__, __LINE__, __FUNCTION__, [NSString stringWithFormat:args]); \
+        } \
+    } while (0)
 #endif
 
 @class PseudoTerminal;
 extern BOOL gDebugLogging;
-void DebugLog(NSString* value);
+extern NSString *kUseBackgroundPatternIndicatorChangedNotification;
+int DebugLogImpl(const char *file, int line, const char *function, NSString* value);
 
 @interface iTermAboutWindow : NSPanel
 {
@@ -60,9 +65,11 @@ void DebugLog(NSString* value);
     NSWindowController *aboutController;
     IBOutlet id ABOUT;
     IBOutlet NSTextView *AUTHORS;
-    
+
     // Menu items
     IBOutlet NSMenu     *bookmarkMenu;
+    IBOutlet NSMenu     *toolbeltMenu;
+    IBOutlet NSMenuItem *showToolbeltItem;
     IBOutlet NSMenuItem *selectTab;
     IBOutlet NSMenuItem *previousTerminal;
     IBOutlet NSMenuItem *nextTerminal;
@@ -71,9 +78,12 @@ void DebugLog(NSString* value);
     IBOutlet NSMenuItem *closeTab;
     IBOutlet NSMenuItem *closeWindow;
     IBOutlet NSMenuItem *sendInputToAllSessions;
+    IBOutlet NSMenuItem *sendInputToAllPanes;
+    IBOutlet NSMenuItem *sendInputNormally;
     IBOutlet NSMenuItem *toggleBookmarksView;
     IBOutlet NSMenuItem *irNext;
     IBOutlet NSMenuItem *irPrev;
+    IBOutlet NSMenuItem *windowArrangements_;
 
     IBOutlet NSMenuItem *secureInput;
     IBOutlet NSMenuItem *showFullScreenTabs;
@@ -85,6 +95,13 @@ void DebugLog(NSString* value);
     // If set, skip performing launch actions.
     BOOL quiet_;
     NSDate* launchTime_;
+
+    // Cross app request forgery prevention token. Get this with applescript and then include
+    // in a URI request.
+    NSString *token_;
+
+    // Set to YES when applicationDidFinishLaunching: is called.
+    BOOL finishedLaunching_;
 }
 
 - (void)awakeFromNib;
@@ -103,12 +120,14 @@ void DebugLog(NSString* value);
 - (void)applicationDidBecomeActive:(NSNotification *)aNotification;
 - (void)applicationDidResignActive:(NSNotification *)aNotification;
 
+- (IBAction)toggleToolbelt:(id)sender;
 - (IBAction)toggleFullScreenTabBar:(id)sender;
 - (IBAction)maximizePane:(id)sender;
 - (IBAction)toggleUseTransparency:(id)sender;
 - (IBAction)toggleSecureInput:(id)sender;
 
 - (IBAction)newWindow:(id)sender;
+- (IBAction)newSessionWithSameProfile:(id)sender;
 - (IBAction)newSession:(id)sender;
 - (IBAction)buildScriptMenu:(id)sender;
 
@@ -120,6 +139,9 @@ void DebugLog(NSString* value);
 
     // About window
 - (IBAction)showAbout:(id)sender;
+
+- (IBAction)makeDefaultTerminal:(id)sender;
+- (IBAction)unmakeDefaultTerminal:(id)sender;
 
 - (IBAction)saveWindowArrangement:(id)sender;
 - (IBAction)loadWindowArrangement:(id)sender;
@@ -149,12 +171,18 @@ void DebugLog(NSString* value);
 - (IBAction)exposeForTabs:(id)sender;
 - (IBAction)editCurrentSession:(id)sender;
 
+- (IBAction)toggleUseBackgroundPatternIndicator:(id)sender;
+- (BOOL)useBackgroundPatternIndicator;
+
 - (void)makeHotKeyWindowKeyIfOpen;
 
 // Implements the 10.6 api but is callable in 10.5 and tries to implement
 // some subset of the flags.
 - (void)setFutureApplicationPresentationOptions:(int)flags unset:(int)antiflags;
 
+- (void)updateBroadcastMenuState;
+
+- (BOOL)showToolbelt;
 
 @end
 
@@ -164,6 +192,7 @@ void DebugLog(NSString* value);
 - (BOOL)application:(NSApplication *)sender delegateHandlesKey:(NSString *)key;
 
 - (PseudoTerminal *)currentTerminal;
+- (NSString *)uriToken;
 
 // accessors for to-many relationships:
 -(NSArray*)terminals;

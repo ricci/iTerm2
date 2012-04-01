@@ -3,11 +3,11 @@
 //  iTerm
 //
 //  Created by George Nachman on 10/18/10.
-//  Copyright 2010 __MyCompanyName__. All rights reserved.
+//  Copyright 2010 George Nachman. All rights reserved.
 //
 
 #import <Cocoa/Cocoa.h>
-#import "iTerm/PseudoTerminal.h"
+#import "PseudoTerminal.h"
 #import "WindowControllerInterface.h"
 
 @interface FakeWindow : NSObject <WindowControllerInterface>
@@ -49,7 +49,6 @@
 - (void)sessionInitiatedResize:(PTYSession*)session width:(int)width height:(int)height;
 - (BOOL)fullScreen;
 - (BOOL)anyFullScreen;
-- (BOOL)sendInputToAllSessions;
 - (void)closeSession:(PTYSession*)aSession;
 - (IBAction)nextTab:(id)sender;
 - (IBAction)previousTab:(id)sender;
@@ -61,7 +60,6 @@
 - (BOOL)tempTitle;
 - (PTYTabView *)tabView;
 - (PTYSession *)currentSession;
-- (void)sendInputToAllSessions:(NSData *)data;
 - (void)setWindowTitle;
 - (void)resetTempTitle;
 - (PTYTab*)currentTab;

@@ -43,8 +43,8 @@
 #include <sys/select.h>
 #include <libproc.h>
 
-#import <iTerm/PTYTask.h>
-#import <iTerm/PreferencePanel.h>
+#import "PTYTask.h"
+#import "PreferencePanel.h"
 #import "ProcessCache.h"
 
 #include <dlfcn.h>
@@ -55,6 +55,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#import "Coprocess.h"
+
+NSString *kCoprocessStatusChangeNotification = @"kCoprocessStatusChangeNotification";
 
 @interface TaskNotifier : NSObject
 {
@@ -150,10 +153,21 @@ static TaskNotifier* taskNotifier = nil;
     PtyTaskDebugLog(@"Begin remove task 0x%x\n", (void*)task);
     PtyTaskDebugLog(@"Add %d to deadpool", [task pid]);
     [deadpool addObject:[NSNumber numberWithInt:[task pid]]];
+    if ([task hasCoprocess]) {
+        [deadpool addObject:[NSNumber numberWithInt:[[task coprocess] pid]]];
+    }
     [tasks removeObject:task];
     tasksChanged = YES;
     PtyTaskDebugLog(@"End remove task 0x%x. There are now %d tasks.\n", (void*)task, [tasks count]);
     PtyTaskDebugLog(@"deregisterTask: unlock\n");
+    [tasksLock unlock];
+    [self unblock];
+}
+
+- (void)waitForPid:(pid_t)pid
+{
+    [tasksLock lock];
+    [deadpool addObject:[NSNumber numberWithInt:pid]];
     [tasksLock unlock];
     [self unblock];
 }
@@ -239,6 +253,38 @@ static TaskNotifier* taskNotifier = nil;
                     FD_SET(fd, &wfds);
                 FD_SET(fd, &efds);
             }
+            @synchronized (task) {
+                Coprocess *coprocess = [task coprocess];
+                if (coprocess) {
+                    if ([coprocess wantToRead] && [task writeBufferHasRoom]) { 
+                        int rfd = [coprocess readFileDescriptor];
+                        if (rfd > highfd) {
+                            highfd = rfd;
+                        }
+                        FD_SET(rfd, &rfds);
+                    }
+                    if ([coprocess wantToWrite]) {
+                        int wfd = [coprocess writeFileDescriptor];
+                        if (wfd > highfd) {
+                            highfd = wfd;
+                        }
+                        FD_SET(wfd, &wfds);
+                    }
+                    if (![coprocess eof]) {
+                        int rfd = [coprocess readFileDescriptor];
+                        if (rfd > highfd) {
+                            highfd = rfd;
+                        }
+                        FD_SET(rfd, &efds);
+
+                        int wfd = [coprocess writeFileDescriptor];
+                        if (wfd > highfd) {
+                            highfd = wfd;
+                        }
+                        FD_SET(wfd, &efds);
+                    }
+                }
+            }
             ++i;
             PtyTaskDebugLog(@"About to get task %d\n", i);
         }
@@ -270,6 +316,7 @@ static TaskNotifier* taskNotifier = nil;
         PtyTaskDebugLog(@"Iterating over %d tasks\n", [tasks count]);
         iter = [tasks objectEnumerator];
         i = 0;
+        BOOL notifyOfCoprocessChange = NO;
 
         while ((task = [iter nextObject])) {
             PtyTaskDebugLog(@"Got task %d\n", i);
@@ -284,6 +331,7 @@ static TaskNotifier* taskNotifier = nil;
                     PtyTaskDebugLog(@"Duplicate fd %d", fd);
                     continue;
                 }
+                [task retain];
                 [handledFds addObject:[NSNumber numberWithInt:fd]];
 
                 if (FD_ISSET(fd, &rfds)) {
@@ -324,12 +372,63 @@ static TaskNotifier* taskNotifier = nil;
                         iter = [tasks objectEnumerator];
                     }
                 }
+
+                // Move input around between coprocess and main process.
+                if ([task fd] >= 0 && ![task hasBrokenPipe]) {  // Make sure the pipe wasn't just broken.
+                    @synchronized (task) {
+                        Coprocess *coprocess = [task coprocess];
+                        if (coprocess) {
+                            fd = [coprocess readFileDescriptor];
+                            if ([handledFds containsObject:[NSNumber numberWithInt:fd]]) {
+                                NSLog(@"Duplicate fd %d", fd);
+                                continue;
+                            }
+                            [handledFds addObject:[NSNumber numberWithInt:fd]];
+                            if (![coprocess eof] && FD_ISSET(fd, &rfds)) {
+                                [coprocess read];
+                                [task writeTask:coprocess.inputBuffer];
+                                [coprocess.inputBuffer setLength:0];
+                            }
+                            if (FD_ISSET(fd, &efds)) {
+                                coprocess.eof = YES;
+                            }
+
+                            fd = [coprocess writeFileDescriptor];
+                            if ([handledFds containsObject:[NSNumber numberWithInt:fd]]) {
+                                NSLog(@"Duplicate fd %d", fd);
+                                continue;
+                            }
+                            [handledFds addObject:[NSNumber numberWithInt:fd]];
+                            if (FD_ISSET(fd, &efds)) {
+                                coprocess.eof = YES;
+                            }
+                            if (FD_ISSET(fd, &wfds)) {
+                                if (![coprocess eof]) {
+                                    [coprocess write];
+                                }
+                            }
+
+                            if ([coprocess eof]) {
+                                [deadpool addObject:[NSNumber numberWithInt:[coprocess pid]]];
+                                [coprocess terminate];
+                                [task setCoprocess:nil];
+                                notifyOfCoprocessChange = YES;
+                            }
+                        }
+                    }
+                }
+                [task release];
             }
             ++i;
             PtyTaskDebugLog(@"About to get task %d\n", i);
         }
         PtyTaskDebugLog(@"run3: unlock");
         [tasksLock unlock];
+        if (notifyOfCoprocessChange) {
+            [self performSelectorOnMainThread:@selector(notifyCoprocessChange)
+                                   withObject:nil
+                                waitUntilDone:YES];
+        }
 
     breakloop:
         [handledFds release];
@@ -337,6 +436,13 @@ static TaskNotifier* taskNotifier = nil;
     }
 
     [outerPool drain];
+}
+
+// This is run in the main thread.
+- (void)notifyCoprocessChange
+{
+    [[NSNotificationCenter defaultCenter] postNotificationName:kCoprocessStatusChangeNotification
+                                                        object:nil];
 }
 
 @end
@@ -375,8 +481,8 @@ setup_tty_param(
     term->c_cc[VDSUSP] = CTRLKEY('Y');
     term->c_cc[VSTART] = CTRLKEY('Q');
     term->c_cc[VSTOP] = CTRLKEY('S');
-    term->c_cc[VLNEXT] = -1;
-    term->c_cc[VDISCARD] = -1;
+    term->c_cc[VLNEXT] = CTRLKEY('V');
+    term->c_cc[VDISCARD] = CTRLKEY('O');
     term->c_cc[VMIN] = 1;
     term->c_cc[VTIME] = 0;
     term->c_cc[VSTATUS] = CTRLKEY('T');
@@ -435,7 +541,19 @@ setup_tty_param(
     [writeBuffer release];
     [tty release];
     [path release];
+	[command_ release];
+
+    @synchronized (self) {
+        [[self coprocess] mainProcessDidTerminate];
+        [coprocess_ release];
+    }
+
     [super dealloc];
+}
+
+- (BOOL)hasBrokenPipe
+{
+    return brokenPipe_;
 }
 
 static void reapchild(int n)
@@ -446,6 +564,11 @@ static void reapchild(int n)
   // until it succeeds. If we wait() on its pid, that process locks because
   // it doesn't check if wait()'s failure is ECHLD. Instead of wait()ing here,
   // we reap our children when our select() loop sees that a pipes is broken.
+}
+
+- (NSString *)command
+{
+	return command_;
 }
 
 - (void)launchWithPath:(NSString*)progpath
@@ -461,57 +584,64 @@ static void reapchild(int n)
     char theTtyname[PATH_MAX];
     int sts;
 
+	[command_ autorelease];
+	command_ = [progpath copy];
     path = [progpath copy];
-
-#if DEBUG_METHOD_TRACE
-    NSLog(@"%s(%d):-[launchWithPath:%@ arguments:%@ environment:%@ width:%d height:%d", __FILE__, __LINE__, progpath, args, env, width, height);
-#endif
 
     setup_tty_param(&term, &win, width, height, isUTF8);
     // Register a handler for the child death signal.
     signal(SIGCHLD, reapchild);
+    const char* argpath;
+    argpath = [[progpath stringByStandardizingPath] UTF8String];
+
+    int max = (args == nil) ? 0 : [args count];
+    const char* argv[max + 2];
+
+    if (asLoginSession) {
+        argv[0] = [[NSString stringWithFormat:@"-%@", [progpath stringByStandardizingPath]] UTF8String];
+    } else {
+        argv[0] = [[progpath stringByStandardizingPath] UTF8String];
+    }
+    if (args != nil) {
+        int i;
+        for (i = 0; i < max; ++i) {
+            argv[i + 1] = [[args objectAtIndex:i] cString];
+        }
+    }
+    argv[max + 1] = NULL;
+    const int envsize = env.count;
+    const char *envKeys[envsize];
+    const char *envValues[envsize];
+    // Copy values from env (our custom environment vars) into envDict
+    int i = 0;
+    for (NSString *k in env) {
+        NSString *v = [env objectForKey:k];
+        envKeys[i] = [k UTF8String];
+        envValues[i] = [v UTF8String];
+        i++;
+    }
+
+    // Note: stringByStandardizingPath will automatically call stringByExpandingTildeInPath.
+    const char *initialPwd = [[[env objectForKey:@"PWD"] stringByStandardizingPath] UTF8String];
     pid = forkpty(&fd, theTtyname, &term, &win);
     if (pid == (pid_t)0) {
-        const char* argpath;
-        argpath = [[progpath stringByStandardizingPath] UTF8String];
         // Do not start the new process with a signal handler.
         signal(SIGCHLD, SIG_DFL);
-        int max = (args == nil) ? 0 : [args count];
-        const char* argv[max + 2];
+        signal(SIGPIPE, SIG_DFL);
+		sigset_t signals;
+		sigemptyset(&signals);
+		sigaddset(&signals, SIGPIPE);
+		sigprocmask(SIG_UNBLOCK, &signals, NULL);
 
-        if (asLoginSession) {
-            argv[0] = [[NSString stringWithFormat:@"-%@", [progpath stringByStandardizingPath]] UTF8String];
-        } else {
-            argv[0] = [[progpath stringByStandardizingPath] UTF8String];
+        chdir(initialPwd);
+        for (i = 0; i < envsize; i++) {
+            setenv(envKeys[i], envValues[i], 1);
         }
-        if (args != nil) {
-            int i;
-            for (i = 0; i < max; ++i) {
-                argv[i + 1] = [[args objectAtIndex:i] cString];
-            }
-        }
-        argv[max + 1] = NULL;
-
-        if (env != nil) {
-            NSArray* keys = [env allKeys];
-            int i, theMax = [keys count];
-            for (i = 0; i < theMax; ++i) {
-                NSString* key;
-                NSString* value;
-                key = [keys objectAtIndex:i];
-                value = [env objectForKey:key];
-                if (key != nil && value != nil) {
-                    setenv([key UTF8String], [value UTF8String], 1);
-                }
-            }
-        }
-        // Note: stringByStandardizingPath will automatically call stringByExpandingTildeInPath.
-        chdir([[[env objectForKey:@"PWD"] stringByStandardizingPath] UTF8String]);
         sts = execvp(argpath, (char* const*)argv);
 
         /* exec error */
         fprintf(stdout, "## exec failed ##\n");
-        fprintf(stdout, "%s %s\n", argpath, strerror(errno));
+        fprintf(stdout, "argpath=%s error=%s\n", argpath, strerror(errno));
 
         sleep(1);
         _exit(-1);
@@ -527,7 +657,7 @@ static void reapchild(int n)
         return;
     }
 
-    tty = [[NSString stringWithCString:theTtyname] retain];
+    tty = [[NSString stringWithUTF8String:theTtyname] retain];
     NSParameterAssert(tty != nil);
 
     fcntl(fd,F_SETFL,O_NONBLOCK);
@@ -541,7 +671,19 @@ static void reapchild(int n)
 
 - (BOOL)wantsWrite
 {
-    return [writeBuffer length] > 0;
+    [writeLock lock];
+    BOOL wantsWrite = [writeBuffer length] > 0;
+    [writeLock unlock];
+    return wantsWrite;
+}
+
+- (BOOL)writeBufferHasRoom
+{
+    const int kMaxWriteBufferSize = 1024 * 10;
+    [writeLock lock];
+    BOOL hasRoom = [writeBuffer length] < kMaxWriteBufferSize;
+    [writeLock unlock];
+    return hasRoom;
 }
 
 - (void)processRead
@@ -637,11 +779,9 @@ static void reapchild(int n)
     return delegate;
 }
 
+// The bytes in data were just read from the fd.
 - (void)readTask:(NSData*)data
 {
-#if DEBUG_METHOD_TRACE
-    NSLog(@"%s(%d):-[PTYTask readTask:%@]", __FILE__, __LINE__, data);
-#endif
     @synchronized(logHandle) {
         if ([self logging]) {
             [logHandle writeData:data];
@@ -653,6 +793,10 @@ static void reapchild(int n)
         [delegate performSelectorOnMainThread:@selector(readTask:)
                                    withObject:data 
                                 waitUntilDone:YES];
+    }
+
+    @synchronized (self) {
+        [coprocess_.outputBuffer appendData:data];
     }
 }
 
@@ -672,6 +816,7 @@ static void reapchild(int n)
 
 - (void)brokenPipe
 {
+    brokenPipe_ = YES;
     [[TaskNotifier sharedInstance] deregisterTask:self];
     if ([delegate respondsToSelector:@selector(brokenPipe)]) {
         [delegate performSelectorOnMainThread:@selector(brokenPipe)
@@ -831,11 +976,7 @@ static void reapchild(int n)
 
         pid_t ppid = taskAllInfo.pbsd.pbi_ppid;
         if (ppid == parentPid) {
-#if MAC_OS_X_VERSION_MIN_REQUIRED <= MAC_OS_X_VERSION_10_5
-            long long birthday = taskAllInfo.pbsd.pbi_start.tv_sec * 1000000 + taskAllInfo.pbsd.pbi_start.tv_usec;
-#else
             long long birthday = taskAllInfo.pbsd.pbi_start_tvsec * 1000000 + taskAllInfo.pbsd.pbi_start_tvusec;  // 10.6 and up
-#endif
             if (birthday < oldestTime || oldestTime == 0) {
                 oldestTime = birthday;
                 oldestPid = pids[i];
@@ -881,6 +1022,58 @@ static void reapchild(int n)
         /* All is good */
         return [NSString stringWithUTF8String:vpi.pvi_cdir.vip_path];
     }
+}
+
+- (void)stopCoprocess
+{
+    pid_t thePid = 0;
+    @synchronized (self) {
+        if (coprocess_.pid > 0) {
+            thePid = coprocess_.pid;
+        }
+        [coprocess_ terminate];
+        [coprocess_ release];
+        coprocess_ = nil;
+    }
+    if (thePid) {
+        [[TaskNotifier sharedInstance] waitForPid:thePid];
+    }
+    [[TaskNotifier sharedInstance] performSelectorOnMainThread:@selector(notifyCoprocessChange)
+                                                    withObject:nil
+                                                 waitUntilDone:NO];
+}
+
+- (void)setCoprocess:(Coprocess *)coprocess
+{
+    @synchronized (self) {
+        [coprocess_ autorelease];
+        coprocess_ = [coprocess retain];
+    }
+    [[TaskNotifier sharedInstance] unblock];
+}
+
+- (Coprocess *)coprocess
+{
+    @synchronized (self) {
+        return coprocess_;
+    }
+    return nil;
+}
+
+- (BOOL)hasCoprocess
+{
+    @synchronized (self) {
+        return coprocess_ != nil;
+    }
+    return NO;
+}
+
+- (BOOL)hasMuteCoprocess
+{
+    @synchronized (self) {
+        return coprocess_ != nil && coprocess_.mute;
+    }
+    return NO;
 }
 
 @end

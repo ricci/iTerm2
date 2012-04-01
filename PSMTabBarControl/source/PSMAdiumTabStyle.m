@@ -365,7 +365,7 @@
         NSImage *closeButton = nil;
 
         if ([cell hasIcon]) {
-            closeButton = [[[cell representedObject] identifier] icon];
+            closeButton = [(id)[[cell representedObject] identifier] icon];
             closeButtonRect.origin.y += 1;
         } else {
             closeButton = _closeButton;
@@ -390,7 +390,7 @@
         labelPosition += [_closeButton size].width + kPSMTabBarCellPadding;
     } else if ([cell hasIcon]) {
         NSRect iconRect = [self iconRectForTabCell:cell];
-        NSImage *icon = [[[cell representedObject] identifier] icon];
+        NSImage *icon = [(id)[[cell representedObject] identifier] icon];
         if ([controlView isFlipped]) {
             iconRect.origin.y += iconRect.size.height;
         }
@@ -448,6 +448,22 @@
     [[cell attributedStringValue] drawInRect:labelRect];
 }
 
+- (void)overlayTabColor:(NSColor *)tabColor inRect:(NSRect)cellFrame cellIsOn:(BOOL)cellIsOn
+{
+    if (tabColor) {
+      if (cellIsOn) {
+          [tabColor set];
+      } else {
+          [[tabColor colorWithAlphaComponent:0.5] set];
+      }
+      NSRectFillUsingOperation(NSMakeRect(cellFrame.origin.x + 0.5,
+                                          cellFrame.origin.y + 0.5,
+                                          cellFrame.size.width,
+                                          cellFrame.size.height),
+                               NSCompositeSourceOver);
+    }
+}
+
 - (void)drawTabCell:(PSMTabBarCell *)cell
 {
     NSRect cellFrame = [cell frame];
@@ -484,6 +500,10 @@
             } else {
                 [_gradientImage drawInRect:NSMakeRect(aRect.origin.x, aRect.origin.y, aRect.size.width, aRect.size.height) fromRect:NSMakeRect(0, 0, [_gradientImage size].width, [_gradientImage size].height) operation:NSCompositeSourceOver fraction:1.0];
             }
+
+            [self overlayTabColor:[cell tabColor]
+                           inRect:NSMakeRect(aRect.origin.x, aRect.origin.y, aRect.size.width, aRect.size.height)
+                         cellIsOn:[cell state] == NSOnState];
 
             // frame
             [lineColor set];
@@ -533,6 +553,10 @@
                 [_gradientImage drawInRect:NSMakeRect(aRect.origin.x, aRect.origin.y, aRect.size.width, aRect.size.height) fromRect:NSMakeRect(0, 0, [_gradientImage size].width, [_gradientImage size].height) operation:NSCompositeSourceOver fraction:1.0];
             }
 
+            [self overlayTabColor:[cell tabColor]
+                           inRect:aRect
+                         cellIsOn:[cell state] == NSOnState];
+
             // frame
             //bottom line
             [lineColor set];
@@ -562,6 +586,10 @@
     } else {
         // unselected tab
         NSRect aRect = NSMakeRect(cellFrame.origin.x, cellFrame.origin.y, cellFrame.size.width, cellFrame.size.height);
+
+        [self overlayTabColor:[cell tabColor]
+                       inRect:aRect
+                     cellIsOn:[cell state] == NSOnState];
 
         // rollover
         if ([cell isHighlighted]) {
@@ -593,19 +621,6 @@
         [bezier stroke];
     }
 
-    NSColor* tabColor = [cell tabColor];
-    if (tabColor) {
-        if ([cell state] == NSOnState) {
-            [[tabColor colorWithAlphaComponent:0.5] set];
-        } else {
-            [tabColor set];
-        }
-        NSRectFillUsingOperation(NSMakeRect(cellFrame.origin.x + 0.5,
-                                            cellFrame.origin.y + 0.5,
-                                            cellFrame.size.width,
-                                            cellFrame.size.height),
-                                 NSCompositeSourceOver);
-    }
     [NSGraphicsContext restoreGraphicsState];
     [theShadow release];
 

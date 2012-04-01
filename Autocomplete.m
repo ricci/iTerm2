@@ -29,9 +29,9 @@
 
 #include <wctype.h>
 #import "Autocomplete.h"
-#import "iTerm/iTermController.h"
-#import "iTerm/VT100Screen.h"
-#import "iTerm/PTYTextView.h"
+#import "iTermController.h"
+#import "VT100Screen.h"
+#import "PTYTextView.h"
 #import "LineBuffer.h"
 #import "PasteboardHistory.h"
 #import "iTermApplicationDelegate.h"
@@ -53,9 +53,20 @@ const int kMaxResultContextWords = 4;
 
 @implementation AutocompleteView
 
++ (int)maxOptions
+{
+    NSNumber *n = [[NSUserDefaults standardUserDefaults] objectForKey:@"AutocompleteMaxOptions"];
+    if (n) {
+        int i = [n intValue];
+        return MAX(MIN(i, 100), 2);
+    } else {
+        return 20;
+    }
+}
+
 - (id)init
 {
-    const int kMaxOptions = 20;
+    const int kMaxOptions = [AutocompleteView maxOptions];
     self = [super initWithWindowNibName:@"Autocomplete"
                                tablePtr:&table_
                                   model:[[[PopupModel alloc] initWithMaxEntries:kMaxOptions] autorelease]];
@@ -553,6 +564,10 @@ const int kMaxResultContextWords = 4;
 
         if (!more_ && [findResults_ count] == 0) {
             AcLog(@"no more and no unprocessed results");
+            if (populateTimer_) {
+               [populateTimer_ invalidate];
+               populateTimer_ = nil;
+            }
             break;
         }
 

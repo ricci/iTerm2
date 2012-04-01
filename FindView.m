@@ -26,7 +26,7 @@
  */
 
 #import "FindView.h"
-#import "iTerm/PseudoTerminal.h"
+#import "PseudoTerminal.h"
 
 @implementation FindView
 
@@ -41,6 +41,14 @@
 - (BOOL)isFlipped
 {
     return YES;
+}
+
+- (void)resetCursorRects
+{
+    [super resetCursorRects];
+    NSRect frame = [self frame];
+    [self addCursorRect:NSMakeRect(0, 0, frame.size.width, frame.size.height)
+                 cursor:[NSCursor arrowCursor]];
 }
 
 - (void)drawRect:(NSRect)dirtyRect {

@@ -28,10 +28,9 @@
 
 #include <wctype.h>
 #import "PasteboardHistory.h"
-#import "iTerm/iTermController.h"
+#import "iTermController.h"
 #import "NSDateFormatterExtras.h"
 #import "PreferencePanel.h"
-#define kPasteboardHistoryDidChange @"PasteboardHistoryDidChange"
 #define PBHKEY_ENTRIES @"Entries"
 #define PBHKEY_VALUE @"Value"
 #define PBHKEY_TIMESTAMP @"Timestamp"
@@ -56,11 +55,22 @@
 
 @implementation PasteboardHistory
 
++ (int)maxEntries
+{
+    NSNumber *n = [[NSUserDefaults standardUserDefaults] objectForKey:@"PasteHistoryMaxOptions"];
+    if (n) {
+        int i = [n intValue];
+        return MAX(MIN(i, 100), 2);
+    } else {
+        return 20;
+    }
+}
+
 + (PasteboardHistory*)sharedInstance
 {
     static PasteboardHistory* instance;
     if (!instance) {
-        int maxEntries = 20;
+        int maxEntries = [PasteboardHistory maxEntries];
         if ([[NSUserDefaults standardUserDefaults] objectForKey:@"MaxPasteHistoryEntries"]) {
             maxEntries = [[NSUserDefaults standardUserDefaults] integerForKey:@"MaxPasteHistoryEntries"];
             if (maxEntries < 0) {
@@ -127,6 +137,11 @@
     }
 }
 
+- (void)clear
+{
+    [entries_ removeAllObjects];
+}
+
 - (void)eraseHistory
 {
     [[NSFileManager defaultManager] removeItemAtPath:path_ error:NULL];
@@ -188,7 +203,7 @@
 
 @end
 
-@implementation PasteboardHistoryView
+@implementation PasteboardHistoryWindowController
 
 - (id)init
 {
@@ -207,6 +222,7 @@
 
 - (void)dealloc
 {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
     [super dealloc];
 }
 

@@ -32,11 +32,18 @@
 #define DEBUG_METHOD_TRACE    0
 
 #import "iTerm.h"
-#import <iTerm/PTYScrollView.h>
-#import <iTerm/PTYTextView.h>
-#import <PreferencePanel.h>
+#import "PTYScrollView.h"
+#import "FutureMethods.h"
+#import "PTYTextView.h"
+#import "PreferencePanel.h"
 #include "NSImage+CoreImage.h"
 #import <Cocoa/Cocoa.h>
+
+@interface PTYScrollView (Private)
+
+- (void)setHasVerticalScroller:(BOOL)flag inInit:(BOOL)inInit;
+
+@end
 
 @implementation PTYScroller
 
@@ -101,18 +108,14 @@
     return [super hitPart];
 }
 
-- (BOOL)_isLegacyScroller
+- (BOOL)isLegacyScroller
 {
-    if ([self respondsToSelector:@selector(scrollerStyle)]) {
-        return [self scrollerStyle] == NSScrollerStyleLegacy;
-    } else {
-        return YES;
-    }
+    return [(NSScroller*)self futureScrollerStyle] == FutureNSScrollerStyleLegacy;
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
     if (IsLionOrLater() &&
-        ![self _isLegacyScroller] &&
+        ![self isLegacyScroller] &&
         self.hasDarkBackground &&
         dirtyRect.size.width > 0 &&
         dirtyRect.size.height > 0) {
@@ -129,11 +132,13 @@
                 coreImageFilter:@"CIColorControls"
                       arguments:[NSDictionary dictionaryWithObjectsAndKeys:[NSNumber numberWithDouble:0.5], @"inputBrightness", nil]];
         [temp unlockFocus];
-        
+
         [temp drawAtPoint:dirtyRect.origin
                  fromRect:dirtyRect
                 operation:NSCompositeCopy
                  fraction:1.0];
+        [temp release];
+        [superDrawn release];
     } else {
         [super drawRect:dirtyRect];
     }
@@ -143,19 +148,14 @@
 
 @implementation PTYScrollView
 
-- (void) dealloc
-{
-    [backgroundImage release];
-
-    [super dealloc];
-}
-
-- (id)initWithFrame:(NSRect)frame
+- (id)initWithFrame:(NSRect)frame hasVerticalScroller:(BOOL)hasVerticalScroller
 {
     if ((self = [super initWithFrame:frame]) == nil) {
         return nil;
     }
-    
+
+    [self setHasVerticalScroller:hasVerticalScroller inInit:YES];
+
     assert([self contentView] != nil);
 
     PTYScroller *aScroller;
@@ -164,7 +164,19 @@
     [self setVerticalScroller:aScroller];
     [aScroller release];
 
+    creationDate_ = [[NSDate date] retain];
+
     return self;
+}
+
+- (void) dealloc
+{
+    [backgroundImage release];
+    [creationDate_ release];
+    [timer_ invalidate];
+    timer_ = nil;
+
+    [super dealloc];
 }
 
 - (void)drawBackgroundImageRect:(NSRect)rect useTransparency:(BOOL)useTransparency
@@ -253,5 +265,60 @@
         [self setNeedsDisplay:YES];
     }
 }
+
+- (void)reallyShowScroller
+{
+    [super setHasVerticalScroller:YES];
+    timer_ = nil;
+}
+
+- (BOOL)isLegacyScroller
+{
+    return [(NSScrollView*)self futureScrollerStyle] == FutureNSScrollerStyleLegacy;
+}
+
+- (void)setHasVerticalScroller:(BOOL)flag
+{
+    [self setHasVerticalScroller:flag inInit:NO];
+}
+@end
+
+
+@implementation PTYScrollView (Private)
+
+- (void)setHasVerticalScroller:(BOOL)flag inInit:(BOOL)inInit
+{
+    if ([self isLegacyScroller]) {
+        [super setHasVerticalScroller:flag];
+        return;
+    }
+
+    // Work around a bug in 10.7.0. When using an overlay scroller and a
+    // non-white background, a white rectangle is briefly visible on the right
+    // side of the window. In that case, delay the initial show of the scroller
+    // for a few seconds.
+    // This isn't related to PTYScroller or the call to setVerticalScroller: as far
+    // as I can tell.
+    const NSTimeInterval kScrollerTimeDelay = 0.5;
+    if (flag &&
+        !timer_ &&
+        (inInit || [[NSDate date] timeIntervalSinceDate:creationDate_] < kScrollerTimeDelay)) {
+        timer_ = [NSTimer scheduledTimerWithTimeInterval:kScrollerTimeDelay
+                                                  target:self
+                                                selector:@selector(reallyShowScroller)
+                                                userInfo:nil
+                                                 repeats:NO];
+        return;
+    } else if (flag && timer_) {
+        return;
+    } else if (!flag && timer_) {
+        [timer_ invalidate];
+        timer_ = nil;
+        return;
+    } else {
+        [super setHasVerticalScroller:flag];
+    }
+}
+
 
 @end

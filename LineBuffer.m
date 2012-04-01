@@ -29,6 +29,7 @@
 
 #import <LineBuffer.h>
 #import "RegexKitLite/RegexKitLite.h"
+#import "BackgroundThread.h"
 
 @implementation ResultRange
 @end
@@ -411,13 +412,15 @@ static int OffsetOfWrappedLine(screen_char_t* p, int n, int length, int width) {
     [self changeBufferSize: [self rawSpaceUsed]];
 }
 
-- (int) dropLines: (int) n withWidth: (int) width;
+- (int) dropLines:(int)n withWidth:(int)width chars:(int *)charsDropped;
 {
     cached_numlines_width = -1;
     int orig_n = n;
     int prev = 0;
     int length;
     int i;
+    *charsDropped = 0;
+    int initialOffset = start_offset;
     for (i = first_entry; i < cll_entries; ++i) {
         int cll = cumulative_line_lengths[i] - start_offset;
         length = cll - prev;
@@ -439,6 +442,7 @@ static int OffsetOfWrappedLine(screen_char_t* p, int n, int length, int width) {
             buffer_start += prev + offset;
             start_offset = buffer_start - raw_buffer;
             first_entry = i;
+            *charsDropped = start_offset - initialOffset;
             return orig_n;
         }
         prev = cll;
@@ -448,7 +452,7 @@ static int OffsetOfWrappedLine(screen_char_t* p, int n, int length, int width) {
     buffer_start = raw_buffer;
     start_offset = 0;
     first_entry = 0;
-
+    *charsDropped = [self rawSpaceUsed];
     return orig_n - n;
 }
 
@@ -938,6 +942,13 @@ static int Search(NSString* needle,
 
 - (void)dealloc
 {
+    // This causes the blocks to be released in a background thread.
+    // When a LineBuffer is really gigantic, it can take
+    // quite a bit of time to release all the blocks.
+    [blocks performSelector:@selector(removeAllObjects)
+                   onThread:[BackgroundThread backgroundThread]
+                 withObject:nil
+              waitUntilDone:NO];
     [blocks release];
     [super dealloc];
 }
@@ -978,8 +989,9 @@ static int RawNumLines(LineBuffer* buffer, int width) {
         if (toDrop > extra_lines) {
             toDrop = extra_lines;
         }
-        int dropped = [block dropLines: toDrop withWidth: width];
-
+        int charsDropped;
+        int dropped = [block dropLines:toDrop withWidth:width chars:&charsDropped];
+        droppedChars += charsDropped;
         if ([block isEmpty]) {
             [blocks removeObjectAtIndex:0];
             ++num_dropped_blocks;
@@ -1555,5 +1567,67 @@ static int RawNumLines(LineBuffer* buffer, int width) {
     return position;
 }
 
+- (long long)absPositionOfFindContext:(FindContext)findContext
+{
+    long long offset = droppedChars + findContext.offset;
+    int numBlocks = findContext.absBlockNum - num_dropped_blocks;
+    for (LineBlock *block in blocks) {
+        if (!numBlocks) {
+            break;
+        }
+        --numBlocks;
+        offset += [block rawSpaceUsed];
+    }
+    return offset;
+}
+
+- (int)positionForAbsPosition:(long long)absPosition
+{
+    absPosition -= droppedChars;
+    if (absPosition < 0) {
+        return [[blocks objectAtIndex:0] startOffset];
+    }
+    if (absPosition > INT_MAX) {
+        absPosition = INT_MAX;
+    }
+    return (int)absPosition;
+}
+
+- (long long)absPositionForPosition:(int)pos
+{
+    long long absPos = pos;
+    return absPos + droppedChars;
+}
+
+- (int)absBlockNumberOfAbsPos:(long long)absPos
+{
+    int absBlock = num_dropped_blocks;
+    long long cumPos = droppedChars;
+    for (LineBlock *block in blocks) {
+        cumPos += [block rawSpaceUsed];
+        if (cumPos >= absPos) {
+            return absBlock;
+        }
+        ++absBlock;
+    }
+    return absBlock;
+}
+
+- (long long)absPositionOfAbsBlock:(int)absBlockNum
+{
+    long long cumPos = droppedChars;
+    for (int i = 0; i < blocks.count && i + num_dropped_blocks < absBlockNum; i++) {
+        cumPos += [[blocks objectAtIndex:i] rawSpaceUsed];
+    }
+    return cumPos;
+}
+
+- (void)storeLocationOfAbsPos:(long long)absPos
+                    inContext:(FindContext *)context
+{
+    context->absBlockNum = [self absBlockNumberOfAbsPos:absPos];
+    long long absOffset = [self absPositionOfAbsBlock:context->absBlockNum];
+    context->offset = MAX(0, absPos - absOffset);
+}
 
 @end

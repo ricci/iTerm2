@@ -8,3 +8,11 @@
 iTerm.xcodeproj/project.pbxproj
 .gitignore
 build/
+.DS_Store
+iTerm.xcodeproj/*
+*.pbxproj
+canary.xml
+testing.xml
+testing_changes.html
+.gitignore
+iTerm.plist

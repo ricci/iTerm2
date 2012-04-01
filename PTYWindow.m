@@ -28,11 +28,11 @@
  **  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
-#import <iTerm/iTerm.h>
-#import <iTerm/PTYWindow.h>
-#import <iTerm/PreferencePanel.h>
-#import <iTerm/PseudoTerminal.h>
-#import <iTerm/iTermController.h>
+#import "iTerm.h"
+#import "PTYWindow.h"
+#import "PreferencePanel.h"
+#import "PseudoTerminal.h"
+#import "iTermController.h"
 // This is included because the blurring code uses undocumented APIs to do its thing.
 #import <CGSInternal.h>
 
@@ -50,9 +50,7 @@
 
 - (void) dealloc
 {
-#if DEBUG_METHOD_ALLOC
-    NSLog(@"%s: 0x%x", __PRETTY_FUNCTION__, self);
-#endif
+    [restoreState_ release];
 
     [super dealloc];
 
@@ -79,6 +77,47 @@
     return self;
 }
 
+typedef CGError CGSSetWindowBackgroundBlurRadiusFunction(CGSConnectionID cid, CGSWindowID wid, NSUInteger blur);
+
+static void *GetFunctionByName(NSString *library, char *func) {
+    CFBundleRef bundle;
+    CFURLRef bundleURL = CFURLCreateWithFileSystemPath(kCFAllocatorDefault, (CFStringRef) library, kCFURLPOSIXPathStyle, true);
+    CFStringRef functionName = CFStringCreateWithCString(kCFAllocatorDefault, func, kCFStringEncodingASCII);    
+    bundle = CFBundleCreate(kCFAllocatorDefault, bundleURL);
+    if (!bundle) {
+        return NULL;
+    }
+    void *f = CFBundleGetFunctionPointerForName(bundle, functionName);
+    CFRelease(functionName);
+    CFRelease(bundleURL);
+    CFRelease(bundle);
+    return f;
+}
+
+static CGSSetWindowBackgroundBlurRadiusFunction* GetCGSSetWindowBackgroundBlurRadiusFunction() {
+    static BOOL tried = NO;
+    static CGSSetWindowBackgroundBlurRadiusFunction *function = NULL;
+    if (!tried) {
+        function  = GetFunctionByName(@"/System/Library/Frameworks/ApplicationServices.framework",
+                                      "CGSSetWindowBackgroundBlurRadius");
+    }
+    return function;
+}
+
+- (void)encodeRestorableStateWithCoder:(NSCoder *)coder
+{
+    // This gives a warning, but this method won't be called except in 10.7 where this
+    // method does exist in our superclass. The only way to avoid the warning
+    // is to do some really gnarly stuff. See here for more:
+    // http://www.cocoabuilder.com/archive/cocoa/214903-using-performselector-on-super.html
+    [super encodeRestorableStateWithCoder:coder];
+    [coder encodeObject:restoreState_ forKey:@"ptyarrangement"];
+}
+
+- (void)setRestoreState:(NSObject *)restoreState {
+    [restoreState_ autorelease];
+    restoreState_ = [restoreState retain];
+}
 
 - (void)enableBlur:(double)radius
 {
@@ -95,15 +134,22 @@
     if (!con) {
         return;
     }
+    CGSSetWindowBackgroundBlurRadiusFunction* function = GetCGSSetWindowBackgroundBlurRadiusFunction();
+    if (IsLionOrLater() && function) {
+        // If CGSSetWindowBackgroundBlurRadius() is available (10.6 and up) use it because it works
+        // right in Exposé.
+        function(con, [self windowNumber], (int)radius);
+    } else {
+        // Fall back to 10.5-only method.
+        if (CGSNewCIFilterByName(con, (CFStringRef)@"CIGaussianBlur", &blurFilter)) {
+            return;
+        }
 
-    if (CGSNewCIFilterByName(con, (CFStringRef)@"CIGaussianBlur", &blurFilter)) {
-        return;
+        NSDictionary *optionsDict = [NSDictionary dictionaryWithObject:[NSNumber numberWithFloat:radius] forKey:@"inputRadius"];
+        CGSSetCIFilterValuesFromDictionary(con, blurFilter, (CFDictionaryRef)optionsDict);
+
+        CGSAddWindowFilter(con, [self windowNumber], blurFilter, kCGWindowFilterUnderlay);
     }
-
-    NSDictionary *optionsDict = [NSDictionary dictionaryWithObject:[NSNumber numberWithFloat:radius] forKey:@"inputRadius"];
-    CGSSetCIFilterValuesFromDictionary(con, blurFilter, (CFDictionaryRef)optionsDict);
-
-    CGSAddWindowFilter(con, [self windowNumber], blurFilter, kCGWindowFilterDock);
     blurRadius_ = radius;
 #endif
 }
@@ -114,11 +160,15 @@
     //only works in Leopard (or hopefully later)
     if (!OSX_LEOPARDORLATER) return;
 
-    if (blurFilter) {
-        CGSConnectionID con = CGSMainConnectionID();
-        if (!con)
-            return;
+    CGSConnectionID con = CGSMainConnectionID();
+    if (!con) {
+        return;
+    }
 
+    CGSSetWindowBackgroundBlurRadiusFunction* function = GetCGSSetWindowBackgroundBlurRadiusFunction();
+    if (IsLionOrLater() && function) {
+        function(con, [self windowNumber], 0);
+    } else if (blurFilter) {
         CGSRemoveWindowFilter(con, (CGSWindowID)[self windowNumber], blurFilter);
         CGSReleaseCIFilter(CGSMainConnectionID(), blurFilter);
         blurFilter = 0;
@@ -128,24 +178,24 @@
 
 - (void)toggleFullScreen:(id)sender
 {
-    isFullScreen_ = !isFullScreen_;
-
-    // This is a way of calling [super toggleFullScreen:] that doesn't give a warning if
-    // the method doesn't exist (it's new in 10.7) but we build against 10.5 sdk.
-    IMP functionPointer = [NSWindow instanceMethodForSelector:_cmd];
-    isTogglingLionFullScreen_ = true;
-    functionPointer(self, _cmd, sender);
-    isTogglingLionFullScreen_ = false;
+    if (![[PreferencePanel sharedInstance] lionStyleFullscreen]) {
+        // The user must have clicked on the toolbar arrow, but the pref is set
+        // to use traditional fullscreen.
+        [[self delegate] performSelector:@selector(toggleTraditionalFullScreenMode)
+                              withObject:nil];
+    } else {
+        // This is a way of calling [super toggleFullScreen:] that doesn't give a warning if
+        // the method doesn't exist (it's new in 10.7) but we build against 10.5 sdk.
+        IMP functionPointer = [NSWindow instanceMethodForSelector:_cmd];
+        isTogglingLionFullScreen_ = true;
+        functionPointer(self, _cmd, sender);
+        isTogglingLionFullScreen_ = false;
+    }
 }
 
 - (BOOL)isTogglingLionFullScreen
 {
     return isTogglingLionFullScreen_;
-}
-
-- (BOOL)isFullScreen
-{
-    return isFullScreen_;
 }
 
 - (int)screenNumber
@@ -195,8 +245,8 @@
     NSRect placementRect = NSMakeRect(
         screenRect.origin.x,
         screenRect.origin.y,
-        screenRect.size.width-[self frame].size.width,
-        screenRect.size.height-[self frame].size.height
+        MAX(1, screenRect.size.width-[self frame].size.width),
+        MAX(1, screenRect.size.height-[self frame].size.height)
     );
 
     for(int x = 0; x < placementRect.size.width/2; x += 50) {
@@ -259,9 +309,11 @@ end:
 
 - (void)makeKeyAndOrderFront:(id)sender
 {
-    if(!layoutDone) {
+    if (!layoutDone) {
         layoutDone = YES;
-        [[self delegate] windowWillShowInitial];
+        if ([[self delegate] respondsToSelector:@selector(windowWillShowInitial)]) {
+            [[self delegate] performSelector:@selector(windowWillShowInitial)];
+        }
     }
     PtyLog(@"PTYWindow - calling makeKeyAndOrderFont, which triggers a window resize");
     PtyLog(@"The current window frame is %fx%f", [self frame].size.width, [self frame].size.height);

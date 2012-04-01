@@ -29,7 +29,7 @@
 
 #import <Foundation/Foundation.h>
 #import <Cocoa/Cocoa.h>
-#import <iTerm/BookmarkModel.h>
+#import "ProfileModel.h"
 
 // Prefs-level keys
 #define KEY_DEFAULT_GUID                @"Default Bookmark Guid"  // use this instead (not in a bookmark)
@@ -42,6 +42,7 @@
 #define KEY_DESCRIPTION                 @"Description"
 #define KEY_CUSTOM_COMMAND              @"Custom Command"
 #define KEY_COMMAND                     @"Command"
+#define KEY_INITIAL_TEXT                @"Initial Text"
 #define KEY_CUSTOM_DIRECTORY            @"Custom Directory"  // values are Yes, No, Recycle
 #define KEY_WORKING_DIRECTORY           @"Working Directory"
 #define KEY_TERMINAL_PROFILE            @"Terminal Profile"
@@ -56,6 +57,14 @@
 #define KEY_ORIGINAL_GUID               @"Original Guid"  // GUID before divorce. Not saved to preferences plist.
 #define KEY_DEFAULT_BOOKMARK            @"Default Bookmark"  // deprecated
 #define KEY_ASK_ABOUT_OUTDATED_KEYMAPS  @"Ask About Outdated Keymaps"
+
+// Advanced working directory settings
+#define KEY_AWDS_WIN_OPTION             @"AWDS Window Option"
+#define KEY_AWDS_WIN_DIRECTORY          @"AWDS Window Directory"
+#define KEY_AWDS_TAB_OPTION             @"AWDS Tab Option"
+#define KEY_AWDS_TAB_DIRECTORY          @"AWDS Tab Directory"
+#define KEY_AWDS_PANE_OPTION            @"AWDS Pane Option"
+#define KEY_AWDS_PANE_DIRECTORY         @"AWDS Pane Directory"
 
 // Per-bookmark keys ----------------------------------------------------------
 // IMPORATANT: If you add keys, also modify doCopyFrom in PreferencePanel.m.
@@ -106,6 +115,7 @@
 #define KEY_USE_BOLD_FONT          @"Use Bold Font"
 #define KEY_USE_BRIGHT_BOLD        @"Use Bright Bold"
 #define KEY_TRANSPARENCY           @"Transparency"
+#define KEY_BLEND                  @"Blend"
 #define KEY_BLUR                   @"Blur"
 #define KEY_BLUR_RADIUS            @"Blur Radius"
 #define KEY_ANTI_ALIASING          @"Anti Aliasing"  // DEPRECATED
@@ -115,6 +125,7 @@
 
 // Terminal
 #define KEY_DISABLE_WINDOW_RESIZING           @"Disable Window Resizing"
+#define KEY_HIDE_AFTER_OPENING                @"Hide After Opening"
 #define KEY_SYNC_TITLE                        @"Sync Title"
 #define KEY_CLOSE_SESSIONS_ON_END             @"Close Sessions On End"
 #define KEY_TREAT_NON_ASCII_AS_DOUBLE_WIDTH   @"Non Ascii Double Width"  // DEPRECATED
@@ -124,27 +135,49 @@
 #define KEY_FLASHING_BELL                     @"Flashing Bell"
 #define KEY_XTERM_MOUSE_REPORTING             @"Mouse Reporting"
 #define KEY_DISABLE_SMCUP_RMCUP               @"Disable Smcup Rmcup"
+#define KEY_DISABLE_PRINTING                  @"Disable Printing"
 #define KEY_SCROLLBACK_WITH_STATUS_BAR        @"Scrollback With Status Bar"
+#define KEY_SCROLLBACK_IN_ALTERNATE_SCREEN    @"Scrollback in Alternate Screen"
 #define KEY_BOOKMARK_GROWL_NOTIFICATIONS      @"BM Growl"
+#define KEY_SET_LOCALE_VARS                   @"Set Local Environment Vars"
 #define KEY_CHARACTER_ENCODING                @"Character Encoding"
 #define KEY_SCROLLBACK_LINES                  @"Scrollback Lines"
 #define KEY_UNLIMITED_SCROLLBACK              @"Unlimited Scrollback"
 #define KEY_TERMINAL_TYPE                     @"Terminal Type"
+
+// Session
+#define KEY_AUTOLOG                           @"Automatically Log"
+#define KEY_LOGDIR                            @"Log Directory"
 #define KEY_SEND_CODE_WHEN_IDLE               @"Send Code When Idle"
 #define KEY_IDLE_CODE                         @"Idle Code"
+#define KEY_PROMPT_CLOSE_DEPRECATED           @"Prompt Before Closing"  // Deprecated due to bad migration in 8/28 build
+#define KEY_PROMPT_CLOSE                      @"Prompt Before Closing 2"
+#define KEY_JOBS                              @"Jobs to Ignore"
 
 // Keyboard
 #define KEY_KEYBOARD_MAP                      @"Keyboard Map"
 #define KEY_OPTION_KEY_SENDS                  @"Option Key Sends"
 #define KEY_RIGHT_OPTION_KEY_SENDS            @"Right Option Key Sends"
 
+// Advanced
+#define KEY_TRIGGERS                         @"Triggers"  // NSArray of NSDictionary
+#define KEY_SMART_SELECTION_RULES            @"Smart Selection Rules"
+#define KEY_TROUTER                          @"Semantic History"
+
 #define WINDOW_TYPE_NORMAL 0
 #define WINDOW_TYPE_FULL_SCREEN 1  // Creates a normal window but all callers to initWithSmartLayout will toggle fullscreen mode if this is the windowType.
 #define WINDOW_TYPE_TOP 2
 #define WINDOW_TYPE_FORCE_FULL_SCREEN 3  // Used internally, never reported by windowType API. Causes initWithSmartLayout to create a window with fullscreen chrome. It will set its windowType to FULL_SCREEN
 #define WINDOW_TYPE_LION_FULL_SCREEN 4  // Lion-native fullscreen
+#define WINDOW_TYPE_BOTTOM 5
 
-@interface ITAddressBookMgr : NSObject
+typedef enum {
+  iTermWindowObject,
+  iTermTabObject,
+  iTermPaneObject,
+} iTermObjectType;
+
+@interface ITAddressBookMgr : NSObject <NSNetServiceBrowserDelegate, NSNetServiceDelegate>
 {
     NSNetServiceBrowser *sshBonjourBrowser;
     NSNetServiceBrowser *ftpBonjourBrowser;
@@ -171,7 +204,7 @@
 + (NSFont *)fontWithDesc:(NSString *)fontDesc;
 + (NSString*)descFromFont:(NSFont*)font;
 - (void)setBookmarks:(NSArray*)newBookmarksArray defaultGuid:(NSString*)guid;
-- (BookmarkModel*)model;
+- (ProfileModel*)model;
 - (void)netServiceBrowser:(NSNetServiceBrowser *)aNetServiceBrowser didFindService:(NSNetService *)aNetService moreComing:(BOOL)moreComing;
 - (void)netServiceBrowser:(NSNetServiceBrowser *)aNetServiceBrowser didRemoveService:(NSNetService *)aNetService moreComing:(BOOL)moreComing;
 - (void)netServiceDidResolveAddress:(NSNetService *)sender;
@@ -179,8 +212,13 @@
 - (void)netServiceWillResolve:(NSNetService *)aNetService;
 - (void)netServiceDidStop:(NSNetService *)aNetService;
 - (NSString*) getBonjourServiceType:(NSString*)aType;
-+ (NSString*)loginShellCommandForBookmark:(Bookmark*)bookmark;
-+ (NSString*)bookmarkCommand:(Bookmark*)bookmark isLoginSession:(BOOL*)isLoginSession;
-+ (NSString*)bookmarkWorkingDirectory:(Bookmark*)bookmark;
++ (NSString*)loginShellCommandForBookmark:(Profile*)bookmark
+							 asLoginShell:(BOOL*)asLoginShell
+							forObjectType:(iTermObjectType)objectType;
++ (NSString*)bookmarkCommand:(Profile*)bookmark
+			  isLoginSession:(BOOL*)isLoginSession
+			   forObjectType:(iTermObjectType)objectType;
++ (NSString*)bookmarkWorkingDirectory:(Profile*)bookmark
+                        forObjectType:(iTermObjectType)objectType;
 
 @end

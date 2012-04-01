@@ -50,13 +50,35 @@
 }
 @end
 
+#define FindOptCaseInsensitive (1 << 0)
+#define FindOptBackwards       (1 << 1)
+#define FindOptRegex           (1 << 2)
+#define FindMultipleResults    (1 << 3)
 typedef struct FindContext {
+    // Current absolute block number being searched.
     int absBlockNum;
+
+    // The substring to search for.
     NSString* substring;
+
+    // A bitwise OR of the options defined above.
     int options;
+
+    // 1: search forward. -1: search backward.
     int dir;
+
+    // The offset within a block to begin searching. -1 means the end of the
+    // block.
     int offset;
+
+    // The offset within a block at which to stop searching. No results
+    // with an offset at or beyond this position will be returned.
     int stopAt;
+
+    // Searching: a search is in progress and this context can be used to search.
+    // Matched: At least one result has been found. This context can be used to
+    //   search again.
+    // NotFound: No results were found and the end of the buffer was reached.
     enum { Searching, Matched, NotFound } status;
     int matchLength;
     NSMutableArray* results;  // used for multiple results
@@ -125,7 +147,7 @@ typedef struct FindContext {
 
 // Drop lines from the start of the buffer. Returns the number of lines actually dropped
 // (either n or the number of lines in the block).
-- (int) dropLines: (int) n withWidth: (int) width;
+- (int) dropLines:(int)n withWidth:(int)width chars:(int *)charsDropped;
 
 // Returns true if there are no lines in the block
 - (BOOL) isEmpty;
@@ -190,6 +212,9 @@ typedef struct FindContext {
     // Cache of the number of wrapped lines
     int num_wrapped_lines_cache;
     int num_wrapped_lines_width;
+
+    // Number of char that have been dropped
+    long long droppedChars;
 }
 
 - (LineBuffer*) initWithBlockSize: (int) bs;
@@ -245,10 +270,6 @@ typedef struct FindContext {
 // Search for a substring. If found, return the position of the hit. Otherwise return -1. Use 0 for the start to indicate the beginning of the buffer or
 // pass the result of a previous findSubstring result. The number of positions the result occupies will be set in *length (which would be different than the
 // length of the substring in the presence of double-width characters.
-#define FindOptCaseInsensitive (1 << 0)
-#define FindOptBackwards       (1 << 1)
-#define FindOptRegex           (1 << 2)
-#define FindMultipleResults    (1 << 3)
 - (void)initFind:(NSString*)substring startingAt:(int)start options:(int)options withContext:(FindContext*)context;
 - (void)releaseFind:(FindContext*)context;
 - (void)findSubstring:(FindContext*)context stopAt:(int)stopAt;
@@ -270,4 +291,14 @@ typedef struct FindContext {
 // Returns the position at the end of the buffer
 - (int) lastPos;
 
+// Convert the block,offset in a findcontext into an absolute position.
+- (long long)absPositionOfFindContext:(FindContext)findContext;
+// Convert an absolute position into a position.
+- (int)positionForAbsPosition:(long long)absPosition;
+// Convert a position into an absolute position.
+- (long long)absPositionForPosition:(int)pos;
+
+// Set the start location of a find context to an absolute position.
+- (void)storeLocationOfAbsPos:(long long)absPos
+                    inContext:(FindContext *)context;
 @end

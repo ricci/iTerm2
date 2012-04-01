@@ -101,7 +101,7 @@ typedef struct screen_char_t
     //     Values between 8 and 15 are bright versions of 0-7.
     //     Values between 16 and 255 are used for 256 color mode:
     //       16-232: rgb value given by 16 + r*36 + g*6 + b, with each color in
-    //         the range [0,6].
+    //         the range [0,5].
     //       233-255: Grayscale values from dimmest gray 233 (which is not black)
     //         to brightest 255 (not white).
     // With alternate background semantics:
@@ -197,6 +197,9 @@ int AppendToComplexChar(int key, unichar codePoint);
 
 // Create a new complex char from two code points. A key is returned.
 int BeginComplexChar(unichar initialCodePoint, unichar combiningChar);
+
+// Create or lookup & return the code for a complex char.
+int GetOrSetComplexChar(NSString* str);
 
 // Returns true if the given character is a combining mark, per chapter 3 of
 // the Unicode 6.0 spec, D52.

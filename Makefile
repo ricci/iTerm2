@@ -5,10 +5,17 @@ PATH := /usr/bin:/bin:/usr/sbin:/sbin
 ITERM_PID=$(shell pgrep "iTerm")
 APPS := /Applications
 ITERM_CONF_PLIST = $(HOME)/Library/Preferences/com.googlecode.iterm2.plist
+COMPACTDATE=$(shell date +"%Y%m%d")
+VERSION = $(shell cat version.txt | sed -e "s/%(extra)s/$(COMPACTDATE)/")
+NAME=$(shell echo $(VERSION) | sed -e "s/\\./_/g")
 
 .PHONY: clean all backup-old-iterm restart
 
-all: Deployment
+all: Development
+dev: Development
+prod: Deployment
+debug: Development
+	/Developer/usr/bin/gdb build/Development/iTerm.app/Contents/MacOS/iTerm
 
 TAGS:
 	find . -name "*.[mhMH]" -exec etags -o ./TAGS -a '{}' +
@@ -21,6 +28,9 @@ Development:
 	xcodebuild -parallelizeTargets -alltargets -configuration Development && \
 	chmod -R go+rX build/Development
 
+Dep:
+	xcodebuild -parallelizeTargets -alltargets -configuration Deployment
+
 Deployment:
 	xcodebuild -parallelizeTargets -alltargets -configuration Deployment && \
 	chmod -R go+rX build/Deployment
@@ -28,9 +38,13 @@ Deployment:
 run: Development
 	build/Development/iTerm.app/Contents/MacOS/iTerm
 
+devzip: Development
+	cd build/Development && \
+	zip -r iTerm2-$(NAME).zip iTerm.app
+
 zip: Deployment
 	cd build/Deployment && \
-	zip -r iTerm_$$(cat ../../version.txt).$$(date '+%Y%m%d').zip iTerm.app
+	zip -r iTerm2-$(NAME).zip iTerm.app
 
 clean:
 	xcodebuild -parallelizeTargets -alltargets clean
@@ -48,3 +62,12 @@ restart:
 	PATH=$(ORIG_PATH) /usr/bin/open /Applications/iTerm.app &
 	/bin/kill -TERM $(ITERM_PID)
 
+canary:
+	cp canary-iTerm.plist iTerm.plist
+	make Deployment
+	./canary.sh
+
+release:
+	cp release-iTerm.plist iTerm.plist
+	make Deployment
+	./release.sh

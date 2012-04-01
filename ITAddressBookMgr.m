@@ -25,9 +25,10 @@
  **  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 #import "ITAddressBookMgr.h"
-
-#import <iTerm/PreferencePanel.h>
-#import <iTerm/iTermKeyBindingMgr.h>
+#import "iTerm.h"
+#import "ProfileModel.h"
+#import "PreferencePanel.h"
+#import "iTermKeyBindingMgr.h"
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/types.h>
@@ -52,13 +53,15 @@
 
     NSUserDefaults* prefs = [NSUserDefaults standardUserDefaults];
 
-    if ([prefs objectForKey:KEY_DEPRECATED_BOOKMARKS] && ![prefs objectForKey:KEY_NEW_BOOKMARKS]) {
+    if ([prefs objectForKey:KEY_DEPRECATED_BOOKMARKS] &&
+        [[prefs objectForKey:KEY_DEPRECATED_BOOKMARKS] isKindOfClass:[NSDictionary class]] &&
+        ![prefs objectForKey:KEY_NEW_BOOKMARKS]) {
         // Have only old-style bookmarks. Load them and convert them to new-style
         // bookmarks.
         [self recursiveMigrateBookmarks:[prefs objectForKey:KEY_DEPRECATED_BOOKMARKS] path:[NSArray arrayWithObjects:nil]];
         [prefs removeObjectForKey:KEY_DEPRECATED_BOOKMARKS];
-        [prefs setObject:[[BookmarkModel sharedInstance] rawData] forKey:KEY_NEW_BOOKMARKS];
-        [[BookmarkModel sharedInstance] removeAllBookmarks];
+        [prefs setObject:[[ProfileModel sharedInstance] rawData] forKey:KEY_NEW_BOOKMARKS];
+        [[ProfileModel sharedInstance] removeAllBookmarks];
     }
 
     // Load new-style bookmarks.
@@ -68,10 +71,10 @@
     }
 
     // Make sure there is at least one bookmark.
-    if ([[BookmarkModel sharedInstance] numberOfBookmarks] == 0) {
+    if ([[ProfileModel sharedInstance] numberOfBookmarks] == 0) {
         NSMutableDictionary* aDict = [[NSMutableDictionary alloc] init];
         [ITAddressBookMgr setDefaultsInBookmark:aDict];
-        [[BookmarkModel sharedInstance] addBookmark:aDict];
+        [[ProfileModel sharedInstance] addBookmark:aDict];
         [aDict release];
     }
 
@@ -200,7 +203,7 @@
         // Not just a folder if it has a command.
         NSMutableDictionary* temp = [NSMutableDictionary dictionaryWithDictionary:data];
         [self copyProfileToBookmark:temp];
-        [temp setObject:[BookmarkModel freshGuid] forKey:KEY_GUID];
+        [temp setObject:[ProfileModel freshGuid] forKey:KEY_GUID];
         [temp setObject:path forKey:KEY_TAGS];
         [temp setObject:@"Yes" forKey:KEY_CUSTOM_COMMAND];
         NSString* dir = [data objectForKey:KEY_WORKING_DIRECTORY];
@@ -211,7 +214,7 @@
         } else {
             [temp setObject:@"No" forKey:KEY_CUSTOM_DIRECTORY];
         }
-        [[BookmarkModel sharedInstance] addBookmark:temp];
+        [[ProfileModel sharedInstance] addBookmark:temp];
     }
 
     NSArray* entries = [node objectForKey:@"Entries"];
@@ -250,17 +253,17 @@
 
 - (void)setBookmarks:(NSArray*)newBookmarksArray defaultGuid:(NSString*)guid
 {
-    [[BookmarkModel sharedInstance] load:newBookmarksArray];
+    [[ProfileModel sharedInstance] load:newBookmarksArray];
     if (guid) {
-        if ([[BookmarkModel sharedInstance] bookmarkWithGuid:guid]) {
-            [[BookmarkModel sharedInstance] setDefaultByGuid:guid];
+        if ([[ProfileModel sharedInstance] bookmarkWithGuid:guid]) {
+            [[ProfileModel sharedInstance] setDefaultByGuid:guid];
         }
     }
 }
 
-- (BookmarkModel*)model
+- (ProfileModel*)model
 {
-    return [BookmarkModel sharedInstance];
+    return [ProfileModel sharedInstance];
 }
 
 // NSNetServiceBrowser delegate methods
@@ -270,7 +273,7 @@
     // resolving works.
     [bonjourServices addObject:aNetService];
     [aNetService setDelegate:self];
-    [aNetService resolve];
+    [aNetService resolveWithTimeout:5];
 }
 
 
@@ -282,17 +285,22 @@
 
     // remove host entry from this group
     NSMutableArray* toRemove = [[[NSMutableArray alloc] init] autorelease];
+#ifdef SUPPORT_SFTP
     NSString* sftpName = [NSString stringWithFormat:@"%@-sftp", [aNetService name]];
-    for (NSNumber* n in [[BookmarkModel sharedInstance] bookmarkIndicesMatchingFilter:@"bonjour"]) {
+#endif
+    for (NSNumber* n in [[ProfileModel sharedInstance] bookmarkIndicesMatchingFilter:@"bonjour"]) {
         int i = [n intValue];
-        Bookmark* bookmark = [[BookmarkModel sharedInstance] bookmarkAtIndex:i];
+        Profile* bookmark = [[ProfileModel sharedInstance] profileAtIndex:i];
         NSString* bookmarkName = [bookmark objectForKey:KEY_NAME];
-        if ([bookmarkName isEqualToString:[aNetService name]] ||
-            [bookmarkName isEqualToString:sftpName]) {
+        if ([bookmarkName isEqualToString:[aNetService name]]
+#ifdef SUPPORT_SFTP
+            || [bookmarkName isEqualToString:sftpName]
+#endif
+            ) {
             [toRemove addObject:[NSNumber numberWithInt:i]];
         }
     }
-    [[BookmarkModel sharedInstance] removeBookmarksAtIndices:toRemove];
+    [[ProfileModel sharedInstance] removeBookmarksAtIndices:toRemove];
 }
 
 + (NSString*)descFromFont:(NSFont*)font
@@ -307,6 +315,11 @@
                                              ofType:@"plist"];
     NSDictionary* presetsDict = [NSDictionary dictionaryWithContentsOfFile: plistFile];
     [aDict addEntriesFromDictionary:presetsDict];
+    // Override the terminal type if it's Lion so those users get the best
+    // experience.
+    if (IsLionOrLater()) {
+        [aDict setObject:@"xterm-256color" forKey:KEY_TERMINAL_TYPE];
+    }
 
     NSString *aName;
 
@@ -327,7 +340,7 @@
                            serviceType:(NSString *)serviceType
 {
   NSMutableDictionary *newBookmark;
-    Bookmark* prototype = [[BookmarkModel sharedInstance] defaultBookmark];
+    Profile* prototype = [[ProfileModel sharedInstance] defaultBookmark];
     if (prototype) {
         newBookmark = [NSMutableDictionary dictionaryWithDictionary:prototype];
     } else {
@@ -344,20 +357,21 @@
     [newBookmark setObject:@"No" forKey:KEY_CUSTOM_DIRECTORY];
     [newBookmark setObject:ipAddressString forKey:KEY_BONJOUR_SERVICE_ADDRESS];
     [newBookmark setObject:[NSArray arrayWithObjects:@"bonjour",nil] forKey:KEY_TAGS];
-    [newBookmark setObject:[BookmarkModel freshGuid] forKey:KEY_GUID];
+    [newBookmark setObject:[ProfileModel freshGuid] forKey:KEY_GUID];
     [newBookmark setObject:@"No" forKey:KEY_DEFAULT_BOOKMARK];
     [newBookmark removeObjectForKey:KEY_SHORTCUT];
-    [[BookmarkModel sharedInstance] addBookmark:newBookmark];
+    [[ProfileModel sharedInstance] addBookmark:newBookmark];
 
+#ifdef SUPPORT_SFTP
     // No bonjour service for sftp. Rides over ssh, so try to detect that
     if ([serviceType isEqualToString:@"ssh"]) {
         [newBookmark setObject:[NSString stringWithFormat:@"%@-sftp", serviceName] forKey:KEY_NAME];
         [newBookmark setObject:[NSArray arrayWithObjects:@"bonjour", @"sftp", nil] forKey:KEY_TAGS];
-        [newBookmark setObject:[BookmarkModel freshGuid] forKey:KEY_GUID];
+        [newBookmark setObject:[ProfileModel freshGuid] forKey:KEY_GUID];
         [newBookmark setObject:[NSString stringWithFormat:@"sftp %@", ipAddressString] forKey:KEY_COMMAND];
-        [[BookmarkModel sharedInstance] addBookmark:newBookmark];
+        [[ProfileModel sharedInstance] addBookmark:newBookmark];
     }
-
+#endif
 }
 // NSNetService delegate
 - (void)netServiceDidResolveAddress:(NSNetService *)sender
@@ -438,11 +452,33 @@ static NSString* UserShell() {
     return shell;
 }
 
-+ (NSString*)loginShellCommandForBookmark:(Bookmark*)bookmark asLoginShell:(BOOL*)asLoginShell
++ (NSString*)loginShellCommandForBookmark:(Profile*)bookmark
+							 asLoginShell:(BOOL*)asLoginShell
+							forObjectType:(iTermObjectType)objectType
 {
     NSString* thisUser = NSUserName();
     NSString* userShell = UserShell();
-    if ([[bookmark objectForKey:KEY_CUSTOM_DIRECTORY] isEqualToString:@"No"]) {
+	NSString *customDirectoryString;
+	if ([[bookmark objectForKey:KEY_CUSTOM_DIRECTORY] isEqualToString:@"Advanced"]) {
+        switch (objectType) {
+          case iTermWindowObject:
+              customDirectoryString = [bookmark objectForKey:KEY_AWDS_WIN_OPTION];
+			  break;
+          case iTermTabObject:
+              customDirectoryString = [bookmark objectForKey:KEY_AWDS_TAB_OPTION];
+              break;
+          case iTermPaneObject:
+              customDirectoryString = [bookmark objectForKey:KEY_AWDS_PANE_OPTION];
+              break;
+          default:
+              NSLog(@"Bogus object type %d", (int)objectType);
+              customDirectoryString = @"No";
+        }
+	} else {
+		customDirectoryString = [bookmark objectForKey:KEY_CUSTOM_DIRECTORY];
+	}
+
+	if ([customDirectoryString isEqualToString:@"No"]) {
         // Run login without -l argument: this is a login session and will use the home dir.
         *asLoginShell = NO;
         return [NSString stringWithFormat:@"login -fp \"%@\"", thisUser];
@@ -465,28 +501,59 @@ static NSString* UserShell() {
     }
 }
 
-+ (NSString*)bookmarkCommand:(Bookmark*)bookmark isLoginSession:(BOOL*)isLoginSession
++ (NSString*)bookmarkCommand:(Profile*)bookmark
+			  isLoginSession:(BOOL*)isLoginSession
+			   forObjectType:(iTermObjectType)objectType
 {
     BOOL custom = [[bookmark objectForKey:KEY_CUSTOM_COMMAND] isEqualToString:@"Yes"];
     if (custom) {
         *isLoginSession = NO;
         return [bookmark objectForKey:KEY_COMMAND];
     } else {
-        return [ITAddressBookMgr loginShellCommandForBookmark:bookmark asLoginShell:isLoginSession];
+        return [ITAddressBookMgr loginShellCommandForBookmark:bookmark
+												 asLoginShell:isLoginSession
+												forObjectType:objectType];
     }
 }
 
++ (NSString *)_advancedWorkingDirWithOption:(NSString *)option
+                                  directory:(NSString *)pwd
+{
+    if ([option isEqualToString:@"Yes"]) {
+        return pwd;
+    } else if ([option isEqualToString:@"Recycle"]) {
+        return @"";
+    } else {
+        // Home dir, option == "No"
+        return NSHomeDirectory();
+    }
+}
 
-+ (NSString*)bookmarkWorkingDirectory:(Bookmark*)bookmark
++ (NSString*)bookmarkWorkingDirectory:(Profile*)bookmark forObjectType:(iTermObjectType)objectType
 {
     NSString* custom = [bookmark objectForKey:KEY_CUSTOM_DIRECTORY];
     if ([custom isEqualToString:@"Yes"]) {
         return [bookmark objectForKey:KEY_WORKING_DIRECTORY];
-    } else if ([custom isEqualToString:@"No"]) {
-        return NSHomeDirectory();
-    } else {
-        // recycle
+    } else if ([custom isEqualToString:@"Recycle"]) {
         return @"";
+    } else if ([custom isEqualToString:@"Advanced"]) {
+        switch (objectType) {
+          case iTermWindowObject:
+              return [ITAddressBookMgr _advancedWorkingDirWithOption:[bookmark objectForKey:KEY_AWDS_WIN_OPTION]
+                                                           directory:[bookmark objectForKey:KEY_AWDS_WIN_DIRECTORY]];
+          case iTermTabObject:
+              return [ITAddressBookMgr _advancedWorkingDirWithOption:[bookmark objectForKey:KEY_AWDS_TAB_OPTION]
+                                                           directory:[bookmark objectForKey:KEY_AWDS_TAB_DIRECTORY]];
+          case iTermPaneObject:
+              return [ITAddressBookMgr _advancedWorkingDirWithOption:[bookmark objectForKey:KEY_AWDS_PANE_OPTION]
+                                                           directory:[bookmark objectForKey:KEY_AWDS_PANE_DIRECTORY]];
+          default:
+              NSLog(@"Bogus object type %d", (int)objectType);
+              return NSHomeDirectory();  // Shouldn't happen
+        }
+    } else {
+        // Home dir, custom == "No"
+        return NSHomeDirectory();
     }
 }
 

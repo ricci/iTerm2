@@ -27,9 +27,14 @@
 
 #import <Cocoa/Cocoa.h>
 #import "FindViewController.h"
+#import "PTYSession.h"
+#import "SessionTitleView.h"
 
 @class PTYSession;
-@interface SessionView : NSView {
+@class SplitSelectionView;
+@class SessionTitleView;
+
+@interface SessionView : NSView <SessionTitleViewDelegate> {
     PTYSession* session_;
     BOOL dim_;
     BOOL backgroundDimmed_;
@@ -46,8 +51,20 @@
 
     // Unique per-process id of view, used for ordering them in PTYTab.
     int viewId_;
+
+    // Saved size for unmaximizing.
+    NSSize savedSize_;
+
+    // When moving a pane, a view is put over all sessions to help the user
+    // choose how to split the destination.
+    SplitSelectionView *splitSelectionView_;
+
+    BOOL showTitle_;
+    SessionTitleView *title_;
+	NSCursor *cursor_;
 }
 
++ (double)titleHeight;
 + (NSDate*)lastResizeDate;
 + (void)windowDidResize;
 - (id)initWithFrame:(NSRect)frame session:(PTYSession*)session;
@@ -62,5 +79,24 @@
 - (void)setBackgroundDimmed:(BOOL)backgroundDimmed;
 - (void)updateDim;
 - (BOOL)backgroundDimmed;
+- (void)saveFrameSize;
+- (void)restoreFrameSize;
+- (void)setSplitSelectionMode:(SplitSelectionMode)mode;
+- (BOOL)setShowTitle:(BOOL)value adjustScrollView:(BOOL)adjustScrollView;
+- (BOOL)showTitle;
+- (void)setTitle:(NSString *)title;
+// For tmux sessions, autoresizing is turned off so the title must be moved
+// manually. This repositions the title view and the find view.
+- (void)updateTitleFrame;
+
+// Returns the largest possible scrollview frame size that can fit in
+// this SessionView.
+// It only differs from the scrollview's size for tmux tabs, for which
+// autoresizing is off.
+- (NSSize)maximumPossibleScrollViewContentSize;
+
+// Smallest SessionView frame that contains our contents based on the session's
+// rows and columns.
+- (NSSize)compactFrame;
 
 @end

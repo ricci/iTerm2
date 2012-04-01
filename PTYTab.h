@@ -30,6 +30,7 @@
 
 #import <Cocoa/Cocoa.h>
 #import "WindowControllerInterface.h"
+#import "PTYSplitView.h"
 
 static const int MIN_SESSION_ROWS = 2;
 static const int MIN_SESSION_COLUMNS = 2;
@@ -38,10 +39,12 @@ static const int MIN_SESSION_COLUMNS = 2;
 @class PseudoTerminal;
 @class FakeWindow;
 @class SessionView;
+@class TmuxController;
+@class SolidColorView;
 
 // This implements NSSplitViewDelegate but it was an informal protocol in 10.5. If 10.5 support
 // is eventually dropped, change this to make it official.
-@interface PTYTab : NSObject {
+@interface PTYTab : NSObject <NSSplitViewDelegate, PTYSplitViewDelegate> {
     PTYSession* activeSession_;
 
     // Owning tab view item
@@ -62,6 +65,14 @@ static const int MIN_SESSION_COLUMNS = 2;
 
     // Does any session have new output?
     BOOL newOutput_;
+
+    // The root view of this tab. May be a SolidColorView for tmux tabs or the
+    // same as root_ otherwise (the normal case).
+    NSView *tabView_;  // weak
+
+    // If there is a flexible root view, this is set and is the tabview's view.
+    // Otherwise it is nil.
+    SolidColorView *flexibleView_;
 
     // The root of a tree of split views whose leaves are SessionViews. The root is the view of the
     // NSTabViewItem.
@@ -89,12 +100,27 @@ static const int MIN_SESSION_COLUMNS = 2;
 
     // If true, report that the tab's ideal size is its currentSize.
     BOOL reportIdeal_;
+
+    // If this window is a tmux client, this is the window number defined by
+    // the tmux server. -1 if not a tmux client.
+    int tmuxWindow_;
+
+    // If positive, then a tmux-originated resize is in progress and splitter
+    // delegates won't interfere.
+    int tmuxOriginatedResizeInProgress_;
+
+    // The tmux controller used by all sessions in this tab.
+    TmuxController *tmuxController_;
+
+    // The last tmux parse tree
+    NSMutableDictionary *parseTree_;
 }
 
 // init/dealloc
 - (id)initWithSession:(PTYSession*)session;
 - (id)initWithRoot:(NSSplitView*)root;
 - (void)dealloc;
+- (void)setRoot:(NSSplitView *)newRoot;
 
 - (NSRect)absoluteFrame;
 - (PTYSession*)activeSession;
@@ -121,10 +147,20 @@ static const int MIN_SESSION_COLUMNS = 2;
 
 - (BOOL)isForegroundTab;
 - (void)sessionInitiatedResize:(PTYSession*)session width:(int)width height:(int)height;
-- (void)fitSessionToCurrentViewSize:(PTYSession*)aSession;
+- (NSSize)sessionSizeForViewSize:(PTYSession *)aSession;
+- (BOOL)fitSessionToCurrentViewSize:(PTYSession*)aSession;
++ (NSDictionary *)tmuxBookmark;
+// Fit session views to scroll views.
+// This is useful for a tmux tab where scrollviews sizes are not tightly coupled to the
+// SessionView size because autoresizing is turned off. When something changes, such as
+// toggling the pane title bars, it's necessary to grow or shrink session views for a
+// tight fit. This should be followed by fitting the window to tabs.
+- (void)recompact;
 
 // Tab index.
 - (int)number;
+
+- (PTYSession *)sessionWithViewId:(int)viewId;
 
 - (int)realObjectCount;
 // These values are observed by PSMTTabBarControl:
@@ -145,6 +181,7 @@ static const int MIN_SESSION_COLUMNS = 2;
 - (void)closeSession:(PTYSession*)session;
 - (void)terminateAllSessions;
 - (NSArray*)sessions;
+- (NSArray *)windowPanes;
 - (NSArray*)sessionViews;
 - (BOOL)allSessionsExited;
 - (void)setDvrInSession:(PTYSession*)newSession;
@@ -175,16 +212,53 @@ static const int MIN_SESSION_COLUMNS = 2;
 //   only one child: make its orientation vertical and add a new subview.
 //   more than one child and a vertical orientation: add a new subview and return it.
 //   more than one child and a horizontal orientation: add a new split subview with vertical orientation and add a sessionview subview to it and return that sessionview.
-- (SessionView*)splitVertically:(BOOL)isVertical targetSession:(PTYSession*)targetSession;
+- (SessionView*)splitVertically:(BOOL)isVertical
+                         before:(BOOL)before
+                  targetSession:(PTYSession*)targetSession;
 - (NSSize)_recursiveMinSize:(NSSplitView*)node;
 - (PTYSession*)_recursiveSessionAtPoint:(NSPoint)point relativeTo:(NSView*)node;
 
-+ (void)openTabWithArrangement:(NSDictionary*)arrangement inTerminal:(PseudoTerminal*)term;
++ (void)drawArrangementPreview:(NSDictionary*)arrangement frame:(NSRect)frame;
++ (PTYTab *)openTabWithArrangement:(NSDictionary*)arrangement inTerminal:(PseudoTerminal*)term hasFlexibleView:(BOOL)hasFlexible;
+- (void)updateFlexibleViewColors;
 - (NSDictionary*)arrangement;
 
+- (void)notifyWindowChanged;
 - (BOOL)hasMaximizedPane;
 - (void)maximize;
 - (void)unmaximize;
+// Does any session in this tab require prompt on close?
+- (BOOL)promptOnClose;
+
+// Anyone changing the number of sessions must call this after the sessions
+// are "well formed".
+- (void)numberOfSessionsDidChange;
+- (BOOL)updatePaneTitles;
+
+- (void)resizeViewsInViewHierarchy:(NSView *)view
+                      forNewLayout:(NSMutableDictionary *)parseTree;
+- (void)reloadTmuxLayout;
++ (PTYTab *)openTabWithTmuxLayout:(NSMutableDictionary *)parseTree
+                       inTerminal:(PseudoTerminal *)term
+                       tmuxWindow:(int)tmuxWindow
+                   tmuxController:(TmuxController *)tmuxController;
++ (void)setTmuxFont:(NSFont *)font
+             nafont:(NSFont *)nafont
+           hSpacing:(double)hs
+           vSpacing:(double)vs;
+
+// Size we should report to fit the current layout
+- (NSSize)tmuxSize;
+// Size we are given the current layout
+- (NSSize)maxTmuxSize;
+
+- (int)tmuxWindow;
+- (BOOL)isTmuxTab;
+- (void)setTmuxLayout:(NSMutableDictionary *)parseTree
+       tmuxController:(TmuxController *)tmuxController;
+// Returns true if the tmux layout is too large for the window to accommodate.
+- (BOOL)layoutIsTooLarge;
+- (TmuxController *)tmuxController;
 
 #pragma mark NSSplitView delegate methods
 - (void)splitViewDidResizeSubviews:(NSNotification *)aNotification;
